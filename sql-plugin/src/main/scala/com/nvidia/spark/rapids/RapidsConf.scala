@@ -551,6 +551,10 @@ val GPU_COREDUMP_PIPE_PATTERN = conf("spark.rapids.gpu.coreDump.pipePattern")
       .integerConf
       .createWithDefault(2)
 
+  val CONCURRENT_IO_TASKS = conf("spark.rapids.sql.concurrentIoTasks")
+    .integerConf
+    .createWithDefault(2)
+
   val SHUFFLE_SPILL_THREADS = conf("spark.rapids.sql.shuffle.spillThreads")
     .doc("Number of threads used to spill shuffle data to disk in the background.")
     .commonlyUsed()

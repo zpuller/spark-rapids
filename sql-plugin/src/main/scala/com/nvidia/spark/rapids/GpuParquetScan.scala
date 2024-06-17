@@ -673,6 +673,8 @@ private case class GpuParquetFileFilterHandler(
       conf: Configuration,
       filters: Array[Filter],
       readDataSchema: StructType): ParquetFileInfoWithBlockMeta = {
+
+    IOSemaphore.acquire()
     withResource(new NvtxRange("filterBlocks", NvtxColor.PURPLE)) { _ =>
       val filePath = new Path(new URI(file.filePath.toString()))
       // Make sure we aren't trying to read encrypted files. For now, remove the related

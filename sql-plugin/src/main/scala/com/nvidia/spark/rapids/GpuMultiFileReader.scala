@@ -1028,9 +1028,21 @@ abstract class MultiFileCoalescingPartitionReaderBase(
   def startNewBufferRetry: Unit = ()
 
   private def readBatch(): Iterator[ColumnarBatch] = {
+    //    val iface = "enp161s0np0"
+    //    val tp = NetworkThroughput.getThroughput(iface)
+    //    logWarning(s"current throughput is $tp kb/s")
+    //    val low_throughput = tp < 1500000
+    //    if (low_throughput) {
+    //      logWarning("activating semaphore")
+    //      IOSemaphore.acquire()
+    //    }
+
+    //    IOSemaphore.acquire()
+
     withResource(new NvtxRange(s"$getFileFormatShortName readBatch", NvtxColor.GREEN)) { _ =>
       val currentChunkMeta = populateCurrentBlockChunk()
       val batchIter = if (currentChunkMeta.clippedSchema.isEmpty) {
+        IOSemaphore.release()
         // not reading any data, so return a degenerate ColumnarBatch with the row count
         if (currentChunkMeta.numTotalRows == 0) {
           EmptyGpuColumnarBatchIterator
@@ -1046,10 +1058,12 @@ abstract class MultiFileCoalescingPartitionReaderBase(
       } else {
         val colTypes = currentChunkMeta.readSchema.fields.map(f => f.dataType)
         if (currentChunkMeta.currentChunk.isEmpty) {
+          IOSemaphore.release()
           CachedGpuBatchIterator(EmptyTableReader, colTypes)
         } else {
           val (dataBuffer, dataSize) = readPartFiles(currentChunkMeta.currentChunk,
             currentChunkMeta.clippedSchema)
+          IOSemaphore.release()
           if (dataSize == 0) {
             dataBuffer.close()
             CachedGpuBatchIterator(EmptyTableReader, colTypes)
@@ -1067,6 +1081,11 @@ abstract class MultiFileCoalescingPartitionReaderBase(
           }
         }
       }
+      //      if (low_throughput) {
+      //        IOSemaphore.release()
+      //      }
+
+      //      IOSemaphore.release()
       new GpuColumnarBatchWithPartitionValuesIterator(batchIter, currentChunkMeta.allPartValues,
         currentChunkMeta.rowsPerPartition, partitionSchema,
         maxGpuColumnSizeBytes).map { withParts =>
