@@ -17,8 +17,10 @@ package com.nvidia.spark.rapids
 
 import java.util.concurrent.Semaphore
 
+import org.apache.spark.TaskContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.internal.SQLConf
+
 
 object IOSemaphore extends Logging {
   private val threadHoldsSemaphore: ThreadLocal[Boolean] = ThreadLocal.withInitial(() => false)
@@ -28,8 +30,14 @@ object IOSemaphore extends Logging {
 
   private val semaphore = new Semaphore(concurrency)
 
+  def heldByThisThread(): Boolean = threadHoldsSemaphore.get()
+
   def acquire(): Unit = {
-    if (threadHoldsSemaphore.get()) {
+    if (GpuSemaphore.hasSemaphore(TaskContext.get)) {
+      throw new IllegalStateException(s"Thread ${Thread.currentThread.getId} trying to " +
+        "acquire IOSemaphore while holding GpuSemaphore !")
+    }
+    if (heldByThisThread()) {
       return
     }
 
@@ -40,7 +48,7 @@ object IOSemaphore extends Logging {
   }
 
   def release(): Unit = {
-    if (!threadHoldsSemaphore.get()) {
+    if (!heldByThisThread()) {
       return
     }
 

@@ -774,6 +774,7 @@ private case class GpuParquetFileFilterHandler(
         dateRebaseModeForThisFile
       }
 
+      IOSemaphore.release()
       ParquetFileInfoWithBlockMeta(filePath, clipped, file.partitionValues,
         clippedSchema, readDataSchema, dateRebaseModeForThisFile,
         timestampRebaseModeForThisFile, hasInt96Timestamps)

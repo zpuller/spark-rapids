@@ -76,6 +76,15 @@ object GpuSemaphore {
     instance = new GpuSemaphore()
   }
 
+  def hasSemaphore(context: TaskContext): Boolean = {
+    if (context != null) {
+      getInstance.hasSemaphore(context)
+    } else {
+      // For unit tests that might try with no context
+      true
+    }
+  }
+
   /**
    * A thread may try to acquire the semaphore without blocking on it. NOTE: A task completion
    * listener will automatically be installed to ensure the semaphore is always released by the
@@ -321,9 +330,23 @@ private final class GpuSemaphore() extends Logging {
   // Keep track of all tasks that are both active on the GPU and blocked waiting on the GPU
   private val tasks = new ConcurrentHashMap[Long, SemaphoreTaskInfo]
 
+  def hasSemaphore(context: TaskContext): Boolean = {
+    val taskAttemptId = context.taskAttemptId()
+    val taskInfo = tasks.computeIfAbsent(taskAttemptId, _ => {
+      onTaskCompletion(context, completeTask)
+      new SemaphoreTaskInfo()
+    })
+    taskInfo.isHoldingSemaphore
+  }
+
   def tryAcquire(context: TaskContext): TryAcquireResult = {
     // Make sure that the thread/task is registered before we try and block
     TaskRegistryTracker.registerThreadForRetry()
+    logWarning(s"Thread ${Thread.currentThread.getId} trying to acquire GpuSemaphore")
+    if (IOSemaphore.heldByThisThread()) {
+      throw new IllegalStateException(s"Thread ${Thread.currentThread.getId} trying to " +
+        "acquire GpuSemaphore while holding IoSemaphore !")
+    }
     val taskAttemptId = context.taskAttemptId()
     val taskInfo = tasks.computeIfAbsent(taskAttemptId, _ => {
       onTaskCompletion(context, completeTask)
@@ -331,6 +354,7 @@ private final class GpuSemaphore() extends Logging {
     })
     if (taskInfo.tryAcquire(semaphore)) {
       GpuDeviceManager.initializeFromTask()
+      logWarning(s"Thread ${Thread.currentThread.getId} successfully acquired GpuSemaphore")
       SemaphoreAcquired
     } else {
       // We need to get the number of tasks that are still waiting
@@ -347,6 +371,10 @@ private final class GpuSemaphore() extends Logging {
   def acquireIfNecessary(context: TaskContext): Unit = {
     // Make sure that the thread/task is registered before we try and block
     TaskRegistryTracker.registerThreadForRetry()
+    logWarning(s"Thread ${Thread.currentThread.getId} trying to acquire GpuSemaphore")
+    if (IOSemaphore.heldByThisThread()) {
+      throw new IllegalStateException("trying to acquire IOSemaphore while holding GpuSemaphore !")
+    }
     GpuTaskMetrics.get.semWaitTime {
       val taskAttemptId = context.taskAttemptId()
       val taskInfo = tasks.computeIfAbsent(taskAttemptId, _ => {
@@ -354,11 +382,13 @@ private final class GpuSemaphore() extends Logging {
         new SemaphoreTaskInfo()
       })
       taskInfo.blockUntilReady(semaphore)
+      logWarning(s"Thread ${Thread.currentThread.getId} successfully acquired GpuSemaphore")
       GpuDeviceManager.initializeFromTask()
     }
   }
 
   def releaseIfNecessary(context: TaskContext): Unit = {
+    logWarning(s"Thread ${Thread.currentThread.getId} releasing GpuSemaphore")
     val nvtxRange = new NvtxRange("Release GPU", NvtxColor.RED)
     try {
       val taskAttemptId = context.taskAttemptId()

@@ -1037,7 +1037,7 @@ abstract class MultiFileCoalescingPartitionReaderBase(
     //      IOSemaphore.acquire()
     //    }
 
-    //    IOSemaphore.acquire()
+    IOSemaphore.acquire()
 
     withResource(new NvtxRange(s"$getFileFormatShortName readBatch", NvtxColor.GREEN)) { _ =>
       val currentChunkMeta = populateCurrentBlockChunk()
@@ -1085,7 +1085,7 @@ abstract class MultiFileCoalescingPartitionReaderBase(
       //        IOSemaphore.release()
       //      }
 
-      //      IOSemaphore.release()
+      IOSemaphore.release()
       new GpuColumnarBatchWithPartitionValuesIterator(batchIter, currentChunkMeta.allPartValues,
         currentChunkMeta.rowsPerPartition, partitionSchema,
         maxGpuColumnSizeBytes).map { withParts =>
