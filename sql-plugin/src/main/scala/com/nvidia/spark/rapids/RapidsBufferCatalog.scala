@@ -16,7 +16,7 @@
 
 package com.nvidia.spark.rapids
 
-import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.{ConcurrentHashMap, Executors, LinkedBlockingQueue, TimeUnit}
 import java.util.function.BiFunction
 
 import scala.collection.JavaConverters.collectionAsScalaIterableConverter
@@ -75,6 +75,22 @@ class RapidsBufferCatalog(
 
   /** A counter used to skip a spill attempt if we detect a different thread has spilled */
   @volatile private[this] var spillCount: Integer = 0
+
+  private val executor = Executors.newSingleThreadExecutor()
+  private val spillQueue = new LinkedBlockingQueue[RapidsBuffer]()
+  val runnable: Runnable = () => {
+    while (true) {
+      val buffer = spillQueue.poll(10, TimeUnit.SECONDS)
+      if (buffer != null) {
+        synchronized {
+          if (!deviceStorage.spillBuffer(buffer, this, Cuda.DEFAULT_STREAM)) {
+            spillQueue.offer(buffer)
+          }
+        }
+      }
+    }
+  }
+  executor.submit(runnable)
 
   class RapidsBufferHandleImpl(
       override val id: RapidsBufferId,
@@ -288,6 +304,7 @@ class RapidsBufferCatalog(
       contigTable: ContiguousTable,
       initialSpillPriority: Long,
       needsSync: Boolean): RapidsBufferHandle = synchronized {
+    logDebug(s"addContiguousTable ${id.toString}")
     addBuffer(
       id,
       contigTable.getBuffer,
@@ -334,6 +351,9 @@ class RapidsBufferCatalog(
           s"Cannot call addBuffer with buffer $buffer")
     }
     registerNewBuffer(rapidsBuffer)
+    if (buffer.isInstanceOf[DeviceMemoryBuffer] && rapidsBuffer.id.isInstanceOf[ShuffleBufferId]) {
+      spillQueue.offer(rapidsBuffer)
+    }
     makeNewHandle(id, initialSpillPriority)
   }
 

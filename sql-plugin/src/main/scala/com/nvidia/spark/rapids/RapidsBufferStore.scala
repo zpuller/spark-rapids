@@ -27,6 +27,7 @@ import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.StorageTier.{DEVICE, HOST, StorageTier}
 import com.nvidia.spark.rapids.format.TableMeta
 
+import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -120,6 +121,18 @@ abstract class RapidsBufferStore(val tier: StorageTier)
       // deadlock: (1) `RapidsBufferBase.free`     calls  (2) `RapidsBufferStore.remove` and
       //           (1) `RapidsBufferStore.freeAll` calls  (2) `RapidsBufferBase.free`.
       values.safeFree()
+    }
+
+    def setSpilling(buffer: RapidsBuffer): Boolean = synchronized {
+      if (spillable.remove(buffer)) {
+        spilling.add(buffer.id)
+        totalBytesSpillable -= buffer.memoryUsedBytes
+        logDebug(s"Buffer ${buffer.id} is spilling (new path). " +
+          s"total=${totalBytesStored}, spillable=${totalBytesSpillable}")
+        true
+      } else {
+        false
+      }
     }
 
     /**
@@ -278,6 +291,40 @@ abstract class RapidsBufferStore(val tier: StorageTier)
     buffers.nextSpillableBuffer()
   }
 
+  private val spilledBuffers = new mutable.ArrayBuffer[BufferSpill]()
+
+  private lazy val batchSize: Int = {
+    val env = SparkEnv.get
+    val conf = env.conf
+    conf.getInt(RapidsConf.SHUFFLE_ASYNC_SPILL_BATCH_SIZE.key,
+      RapidsConf.SHUFFLE_ASYNC_SPILL_BATCH_SIZE.defaultValue)
+  }
+
+  def spillBuffer(
+                   buffer: RapidsBuffer,
+                   catalog: RapidsBufferCatalog,
+                   stream: Cuda.Stream): Boolean = synchronized {
+    if (buffers.setSpilling(buffer)) {
+      logDebug(s"preemptively spilling ${buffer.id}")
+      val buf = catalog.acquireBuffer(buffer.id, DEVICE).get
+      withResource(buf) { _ =>
+        val bufferSpill = spillBuffer(buf, this, catalog, stream)
+        catalog.updateTiers(bufferSpill)
+        spilledBuffers.append(bufferSpill)
+      }
+      if (spilledBuffers.length >= batchSize) {
+        logDebug("async freeing spilled buffers")
+        Cuda.deviceSynchronize()
+        spilledBuffers.foreach(_.spillBuffer.safeFree())
+        spilledBuffers.clear()
+        logDebug("done async freeing spilled buffers")
+      }
+      true
+    } else {
+      false
+    }
+  }
+
   def synchronousSpill(
       targetTotalSize: Long,
       catalog: RapidsBufferCatalog,
@@ -285,7 +332,8 @@ abstract class RapidsBufferStore(val tier: StorageTier)
     if (currentSpillableSize > targetTotalSize) {
       logWarning(s"Targeting a ${name} size of $targetTotalSize. " +
           s"Current total ${currentSize}. " +
-          s"Current spillable ${currentSpillableSize}")
+          s"Current spillable ${currentSpillableSize}" +
+          s"from thread ${Thread.currentThread().getId}")
       val bufferSpills = new mutable.ArrayBuffer[BufferSpill]()
       withResource(new NvtxRange(s"${name} sync spill", NvtxColor.ORANGE)) { _ =>
         logWarning(s"${name} store spilling to reduce usage from " +
@@ -310,6 +358,7 @@ abstract class RapidsBufferStore(val tier: StorageTier)
                     spillBuffer(
                       nextSpillableBuffer, this, catalog, stream)
                   } else {
+                    logDebug(s"buffer ${nextSpillableBuffer.id} already spilled in advance")
                     // if `nextSpillableBuffer` already spilled, we still need to
                     // remove it from our tier and call free on it, but set
                     // `newBuffer` to None because there's nothing to register
@@ -359,7 +408,7 @@ abstract class RapidsBufferStore(val tier: StorageTier)
    *         spilled.
    * @note called with catalog lock held
    */
-  private def spillBuffer(
+  def spillBuffer(
       buffer: RapidsBuffer,
       store: RapidsBufferStore,
       catalog: RapidsBufferCatalog,

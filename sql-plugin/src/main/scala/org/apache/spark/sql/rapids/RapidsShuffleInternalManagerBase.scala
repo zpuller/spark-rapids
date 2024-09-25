@@ -1189,6 +1189,8 @@ class RapidsCachingWriter[K, V](
     val nvtxRange = new NvtxRange("RapidsCachingWriter.close", NvtxColor.CYAN)
     try {
       if (!success) {
+        val shuffleId = handle.shuffleId
+        logError(s"a shuffle write failed! map_id=$mapId, shuffle_id=$shuffleId")
         cleanStorage()
         None
       } else {
