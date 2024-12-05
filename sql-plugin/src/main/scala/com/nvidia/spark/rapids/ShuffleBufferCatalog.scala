@@ -16,7 +16,7 @@
 
 package com.nvidia.spark.rapids
 
-import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.{ConcurrentHashMap, Executors, LinkedBlockingQueue, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.function.{Consumer, IntUnaryOperator}
 
@@ -44,6 +44,23 @@ case class ShuffleBufferId(
 
 /** Catalog for lookup of shuffle buffers by block ID */
 class ShuffleBufferCatalog extends Logging {
+  private val executor = Executors.newSingleThreadExecutor()
+  private val spillQueue = new LinkedBlockingQueue[SpillableDeviceBufferHandle]()
+  private val runnable: Runnable = () => {
+    while (true) {
+      val maybeBuffer = Option(spillQueue.poll(10, TimeUnit.SECONDS))
+      maybeBuffer.foreach(buffer => {
+        synchronized {
+          // this used to do batching, which we still may want
+          if (buffer.spill() == 0) {
+            spillQueue.offer(buffer)
+          }
+        }
+      })
+    }
+  }
+  executor.submit(runnable)
+
   /**
    * Information stored for each active shuffle.
    * A shuffle block can be comprised of multiple batches. Each batch
@@ -108,6 +125,7 @@ class ShuffleBufferCatalog extends Logging {
       val buff = contigTable.getBuffer
       buff.incRefCount()
       val handle = SpillableDeviceBufferHandle(buff)
+      spillQueue.offer(handle)
       trackCachedHandle(bufferId, handle, tableMeta)
     }
   }
