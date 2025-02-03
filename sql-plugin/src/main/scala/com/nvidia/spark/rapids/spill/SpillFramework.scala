@@ -22,10 +22,8 @@ import java.nio.channels.{Channels, FileChannel, WritableByteChannel}
 import java.nio.file.StandardOpenOption
 import java.util
 import java.util.UUID
-import java.util.concurrent.{ConcurrentHashMap, LinkedBlockingQueue}
-
-import scala.collection.mutable
-
+import java.util.concurrent.{ConcurrentHashMap, Executors, LinkedBlockingQueue}
+import scala.collection.{JavaConverters, mutable}
 import ai.rapids.cudf._
 import com.nvidia.spark.rapids.{GpuColumnVector, GpuColumnVectorFromBuffer, GpuCompressedColumnVector, GpuDeviceManager, HostAlloc, HostMemoryOutputStream, MemoryBufferToHostByteBufferIterator, RapidsConf, RapidsHostColumnVector}
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
@@ -33,7 +31,6 @@ import com.nvidia.spark.rapids.RapidsPluginImplicits.AutoCloseableSeq
 import com.nvidia.spark.rapids.format.TableMeta
 import com.nvidia.spark.rapids.internal.HostByteBufferIterator
 import org.apache.commons.io.IOUtils
-
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.rapids.{GpuTaskMetrics, RapidsDiskBlockManager}
@@ -42,6 +39,9 @@ import org.apache.spark.sql.rapids.storage.RapidsStorageUtils
 import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.storage.BlockId
+
+import scala.concurrent.duration.Duration
+import scala.concurrent.{Await, ExecutionContext, Future}
 
 
 /**
@@ -1168,14 +1168,20 @@ trait SpillableStore[T <: SpillableHandle]
    * to obtain the list of spilled handles. The device store does this
    * to inject CUDA synchronization before actually releasing device handles.
    */
+  object SpillPlan {
+    private val threadPool = Executors.newFixedThreadPool(10)
+    implicit val ec: ExecutionContext = ExecutionContext.fromExecutor(threadPool)
+  }
+
   class SpillPlan {
+    import SpillPlan.ec
+
     private val spillableHandles = new util.ArrayList[T]()
     private val spilledHandles = new util.ArrayList[T]()
 
     def add(spillable: T): Unit = {
       spillableHandles.add(spillable)
     }
-
     def trySpill(): Long = {
       var amountSpilled = 0L
       val it = spillableHandles.iterator()
@@ -1194,6 +1200,29 @@ trait SpillableStore[T <: SpillableHandle]
           it.remove()
         }
       }
+      amountSpilled
+    }
+
+    def trySpillAsync(): Long = {
+      var amountSpilled = 0L
+      val futures: Future[Seq[(T,  Long)]] = Future.traverse(JavaConverters.asScalaIterator(
+          spillableHandles.iterator()).toSeq)(handle => Future {
+        val spilled = handle.spill()
+        if (spilled > 0) {
+          (handle, spilled)
+        } else {
+          (null.asInstanceOf[T], 0)
+        }
+      })
+
+      val results = Await.result(futures, Duration.Inf)
+      results.foreach{ case (h, s) =>
+        if (h != null) {
+          spilledHandles.add(h)
+          amountSpilled += s
+        }
+      }
+
       amountSpilled
     }
 
@@ -1219,13 +1248,17 @@ trait SpillableStore[T <: SpillableHandle]
 
   protected def postSpill(plan: SpillPlan): Unit = {}
 
-  def spill(spillNeeded: Long): Long = {
+  def spill(spillNeeded: Long, async: Boolean = false): Long = {
     if (spillNeeded == 0) {
       0L
     } else {
       withResource(spillNvtxRange) { _ =>
         val plan = makeSpillPlan(spillNeeded)
-        val amountSpilled = plan.trySpill()
+        val amountSpilled = if (async) {
+          plan.trySpillAsync()
+        } else {
+          plan.trySpill()
+        }
         postSpill(plan)
         amountSpilled
       }
@@ -1236,6 +1269,9 @@ trait SpillableStore[T <: SpillableHandle]
 class SpillableHostStore(val maxSize: Option[Long] = None)
   extends SpillableStore[HostSpillableHandle[_]]
     with Logging {
+
+  override def spill(spillNeeded: Long, async: Boolean = true): Long =
+      super.spill(spillNeeded, async = true)
 
   private[spill] var totalSize: Long = 0L
 
