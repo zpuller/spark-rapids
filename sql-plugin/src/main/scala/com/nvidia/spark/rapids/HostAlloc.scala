@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.LongAdder
 
 import scala.collection.mutable
 
-import ai.rapids.cudf.{DefaultHostMemoryAllocator, HostMemoryAllocator, HostMemoryBuffer, MemoryBuffer, PinnedMemoryPool}
+import ai.rapids.cudf.{DefaultHostMemoryAllocator, HostMemoryAllocator, HostMemoryBuffer, MemoryBuffer, PageableMemoryPool, PinnedMemoryPool}
 import com.nvidia.spark.rapids.HostAlloc.bookkeepHostMemoryFree
 import com.nvidia.spark.rapids.RmmRapidsRetryIterator.{BOOKKEEP_MEMORY, BOOKKEEP_MEMORY_CALLSTACK}
 import com.nvidia.spark.rapids.jni.{CpuRetryOOM, RmmSpark}
@@ -39,6 +39,7 @@ private class HostAlloc(nonPinnedLimit: Long) extends HostMemoryAllocator with L
   // For now we are going to assume that we are the only ones calling into the pinned pool
   // That is not really true, but should be okay.
   private var currentPinnedAllocated: Long = 0L
+  private var currentPageableAllocated: Long = 0L
   private val isUnlimited = nonPinnedLimit < 0
   private val isPinnedOnly = nonPinnedLimit == 0
 
@@ -70,6 +71,17 @@ private class HostAlloc(nonPinnedLimit: Long) extends HostMemoryAllocator with L
     }
   }
 
+  private class OnPageableCloseCallback(ptr: Long, amount: Long) extends MemoryBuffer.EventHandler {
+    override def onClosed(refCount: Int): Unit = {
+      if (refCount == 0) {
+        releasePageable(ptr, amount)
+        if (BOOKKEEP_MEMORY) {
+          bookkeepHostMemoryFree(ptr, amount)
+        }
+      }
+    }
+  }
+
   private def getHostAllocMetricsLogStr(metrics: GpuTaskMetrics): String = {
     Option(TaskContext.get()).map { context =>
       val taskId = context.taskAttemptId()
@@ -77,6 +89,16 @@ private class HostAlloc(nonPinnedLimit: Long) extends HostMemoryAllocator with L
       val maxSize = metrics.getMaxHostBytesAllocated
       s"total size for task $taskId is $totalSize, max size is $maxSize"
     }.getOrElse("allocated memory outside of a task context")
+  }
+
+  private def releasePageable(ptr: Long, amount: Long): Unit = {
+    synchronized {
+      currentPageableAllocated -= amount
+    }
+    val metrics = GpuTaskMetrics.get
+    metrics.decHostBytesAllocated(amount, isPinned = true)
+    logTrace(getHostAllocMetricsLogStr(metrics))
+    RmmSpark.cpuDeallocate(ptr, amount)
   }
 
   private def releasePinned(ptr: Long, amount: Long): Unit = {
@@ -99,13 +121,26 @@ private class HostAlloc(nonPinnedLimit: Long) extends HostMemoryAllocator with L
     RmmSpark.cpuDeallocate(ptr, amount)
   }
 
-  private def tryAllocPinned(amount: Long): Option[HostMemoryBuffer] = {
+  def tryAllocPinnedTest(amount: Long): Option[HostMemoryBuffer] = {
     val ret = Option(PinnedMemoryPool.tryAllocate(amount))
     ret.foreach { b =>
       synchronized {
         currentPinnedAllocated += amount
       }
       HostAlloc.addEventHandler(b, new OnPinnedCloseCallback(b.getAddress, amount))
+    }
+    ret
+  }
+
+  // We're going to move all the current pinned allocs to the pageable pool, and the scan
+  // will call a new test API for pinned
+  private def tryAllocPinned(amount: Long): Option[HostMemoryBuffer] = {
+    val ret = Option(PageableMemoryPool.tryAllocate(amount))
+    ret.foreach { b =>
+      synchronized {
+        currentPageableAllocated += amount
+      }
+      HostAlloc.addEventHandler(b, new OnPageableCloseCallback(b.getAddress, amount))
     }
     ret
   }
@@ -155,7 +190,7 @@ private class HostAlloc(nonPinnedLimit: Long) extends HostMemoryAllocator with L
 
     val store = SpillFramework.stores.hostStore
     val totalSize: Long = synchronized {
-      currentPinnedAllocated + currentNonPinnedAllocated
+      currentPageableAllocated + currentPinnedAllocated + currentNonPinnedAllocated
     }
 
     val attemptMsg = if (retryCount > 0) {
@@ -285,6 +320,10 @@ object HostAlloc extends Logging {
   def initialize(nonPinnedLimit: Long): Unit = synchronized {
     singleton = new HostAlloc(nonPinnedLimit)
     DefaultHostMemoryAllocator.set(singleton)
+  }
+
+  def tryAllocPinned(amount: Long): Option[HostMemoryBuffer] = {
+    getSingleton.tryAllocPinnedTest(amount)
   }
 
   def tryAlloc(amount: Long, preferPinned: Boolean = true): Option[HostMemoryBuffer] = {

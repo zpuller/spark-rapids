@@ -26,16 +26,15 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable.{ArrayBuffer, LinkedHashMap, Queue}
 import scala.collection.mutable
 import scala.language.implicitConversions
-
 import ai.rapids.cudf.{HostMemoryBuffer, NvtxColor, NvtxRange, Table}
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.GpuMetric._
 import com.nvidia.spark.rapids.RapidsPluginImplicits.{AutoCloseableArray, AutoCloseableProducingSeq}
 import com.nvidia.spark.rapids.RmmRapidsRetryIterator.withRetryNoSplit
+import com.nvidia.spark.rapids.jni.CpuRetryOOM
 import org.apache.commons.io.IOUtils
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
-
 import org.apache.spark.TaskContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
@@ -1098,8 +1097,13 @@ abstract class MultiFileCoalescingPartitionReaderBase(
       // First, estimate the output file size for the initial allocating.
       //   the estimated size should be >= size of HEAD + Blocks + FOOTER
       val initTotalSize = calculateEstimatedBlocksOutputSize(batchContext)
+      // this is the one used by scan, which we will switch to used pinned
       val initBuf = withRetryNoSplit[HostMemoryBuffer] {
-        HostMemoryBuffer.allocate(initTotalSize)
+        val ret = HostAlloc.tryAllocPinned(initTotalSize)
+        if (ret.isEmpty) {
+          throw new CpuRetryOOM("pinned alloc failed")
+        }
+        ret.get
       }
       val (buffer, bufferSize, footerOffset, outBlocks) =
         closeOnExcept(initBuf) { hmb =>
