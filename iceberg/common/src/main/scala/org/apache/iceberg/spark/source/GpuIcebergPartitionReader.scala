@@ -117,7 +117,8 @@ class GpuIcebergPartitionReader(private val task: GpuSparkInputPartition,
       val file = inputFiles(locationOf(t.file()))
       val icebergFile = IcebergPartitionedFile(file,
         Some((t.start(), t.length())),
-        Some(t.residual()))
+        Some(t.residual()),
+        rapidsFileIO)
 
       icebergFile -> t
     }))
