@@ -135,4 +135,15 @@ public final class IcebergS3InputFile implements RapidsInputFile {
     }
     IcebergS3RangeCopier.copyTailToHMB(icebergS3Client, output, s3Uri, length, /*dstOffset*/ 0L);
   }
+
+  /**
+   * Copies a suffix range using this input file's resolved Iceberg S3 client.
+   *
+   * @return the number of bytes copied
+   */
+  public long copyTailToHMB(long length, HostMemoryBuffer output, long outputOffset)
+      throws IOException {
+    return IcebergS3RangeCopier.copyTailToHMB(
+        icebergS3Client, output, s3Uri, length, outputOffset);
+  }
 }

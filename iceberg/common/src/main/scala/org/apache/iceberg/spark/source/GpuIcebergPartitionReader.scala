@@ -26,6 +26,7 @@ import com.nvidia.spark.rapids.iceberg.ShimUtils.locationOf
 import com.nvidia.spark.rapids.iceberg.data.GpuDeleteFilter
 import com.nvidia.spark.rapids.iceberg.parquet._
 import org.apache.iceberg._
+import org.apache.iceberg.aws.s3.IcebergS3InputFile
 import org.apache.iceberg.encryption.EncryptedFiles
 import org.apache.iceberg.mapping.NameMappingParser
 
@@ -117,7 +118,8 @@ class GpuIcebergPartitionReader(private val task: GpuSparkInputPartition,
       val file = inputFiles(locationOf(t.file()))
       val icebergFile = IcebergPartitionedFile(file,
         Some((t.start(), t.length())),
-        Some(t.residual()))
+        Some(t.residual()),
+        IcebergS3InputFile.maybeCreate(file.getDelegate, fileIO))
 
       icebergFile -> t
     }))
