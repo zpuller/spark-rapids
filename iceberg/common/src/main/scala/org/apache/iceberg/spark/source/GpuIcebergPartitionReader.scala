@@ -20,12 +20,13 @@ import scala.collection.JavaConverters._
 
 import com.nvidia.spark.rapids.GpuMetric
 import com.nvidia.spark.rapids.MapUtil.toMapStrict
-import com.nvidia.spark.rapids.fileio.iceberg.{IcebergFileIO, IcebergInputFile}
+import com.nvidia.spark.rapids.fileio.iceberg.IcebergFileIO
 import com.nvidia.spark.rapids.iceberg.ShimUtils
 import com.nvidia.spark.rapids.iceberg.ShimUtils.locationOf
 import com.nvidia.spark.rapids.iceberg.data.GpuDeleteFilter
 import com.nvidia.spark.rapids.iceberg.parquet._
 import org.apache.iceberg._
+import org.apache.iceberg.aws.s3.IcebergS3InputFile
 import org.apache.iceberg.encryption.EncryptedFiles
 import org.apache.iceberg.mapping.NameMappingParser
 
@@ -110,7 +111,7 @@ class GpuIcebergPartitionReader(private val task: GpuSparkInputPartition,
     val inputFiles = table.encryption()
       .decrypt(encryptedFiles.asJava)
       .asScala
-      .map(f => f.location() -> new IcebergInputFile(f))
+      .map(f => f.location() -> IcebergS3InputFile.maybeCreate(f, fileIO))
       .toMap
 
     val taskMap = toMapStrict(tasks.map(t => {

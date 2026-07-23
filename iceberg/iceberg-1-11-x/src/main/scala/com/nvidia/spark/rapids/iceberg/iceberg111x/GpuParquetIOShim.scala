@@ -41,7 +41,8 @@ object GpuParquetIOShim {
       metrics: Map[String, GpuMetric]): ParquetFileReader = {
     val metadata = withResource(ParquetFooterUtils.getFooterBuffer(
         inputFile, metrics,
-        ParquetFooterUtils.readFooterBufferFromInputFile(inputFile, filePath))) { hmb =>
+        ParquetFooterUtils.readFooterBufferFromInputFileWithSuffixPrefetch(inputFile, filePath))) {
+      hmb =>
       val shadedHmbFile = ToIcebergShaded.shade(new HMBInputFile(hmb))
       withResource(shadedHmbFile.newStream()) { hmbStream =>
         ParquetFileReader.readFooter(shadedHmbFile, options, hmbStream)

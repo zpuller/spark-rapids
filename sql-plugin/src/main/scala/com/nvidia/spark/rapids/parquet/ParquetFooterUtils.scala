@@ -23,6 +23,7 @@ import ai.rapids.cudf.HostMemoryBuffer
 import com.nvidia.spark.rapids.{GpuMetric, NoopMetric, NvtxRegistry, RapidsConf}
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.filecache.FileCache
+import com.nvidia.spark.rapids.fileio.SizedTailInputFile
 import com.nvidia.spark.rapids.jni.fileio.RapidsInputFile
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.io.IOUtils
@@ -38,6 +39,9 @@ import org.apache.parquet.hadoop.ParquetFileWriter.MAGIC
  */
 object ParquetFooterUtils {
   val FooterLengthSize: Int = java.lang.Integer.BYTES
+  private val IcebergSuffixPrefetchSizeKey =
+    "spark.rapids.iceberg.parquet.footer.suffixPrefetchSize"
+  private val DefaultIcebergSuffixPrefetchSize = 0L
   private val ParquetMagicEncrypted = "PARE".getBytes(StandardCharsets.US_ASCII)
 
   def verifyParquetMagic(filePath: Path, magic: Array[Byte]): Unit = {
@@ -110,6 +114,53 @@ object ParquetFooterUtils {
           outBuffer
         }
       }
+    }
+  }
+
+  /**
+   * Read one configurable suffix and parse the footer from it. For Iceberg S3 PerfIO this
+   * replaces the footer-length request and following footer request with a single suffix GET.
+   * Unsupported inputs and footers larger than the prefetched suffix use the existing path.
+   */
+  def readFooterBufferFromInputFileWithSuffixPrefetch(
+      inputFile: RapidsInputFile,
+      filePath: Path): HostMemoryBuffer = {
+    val configuredSize = Option(org.apache.spark.SparkEnv.get)
+      .map(_.conf.getSizeAsBytes(
+        IcebergSuffixPrefetchSizeKey, DefaultIcebergSuffixPrefetchSize.toString))
+      .getOrElse(DefaultIcebergSuffixPrefetchSize)
+    if (configuredSize <= 0 || !inputFile.isInstanceOf[SizedTailInputFile]) {
+      return readFooterBufferFromInputFile(inputFile, filePath)
+    }
+
+    val prefetchSize = Math.toIntExact(
+      math.max(configuredSize, FooterLengthSize + MAGIC.length))
+    try {
+      withResource(HostMemoryBuffer.allocate(prefetchSize, false)) { suffix =>
+        val actualSize = Math.toIntExact(
+          inputFile.asInstanceOf[SizedTailInputFile].readTailAndGetSize(prefetchSize, suffix))
+        if (actualSize < FooterLengthSize + MAGIC.length) {
+          return readFooterBufferFromInputFile(inputFile, filePath)
+        }
+
+        val footerLengthOffset = actualSize - FooterLengthSize - MAGIC.length
+        val magic = readBytesFromBuffer(suffix, actualSize - MAGIC.length, MAGIC.length)
+        verifyParquetMagic(filePath, magic)
+        val footerLengthBytes = readBytesFromBuffer(suffix, footerLengthOffset, FooterLengthSize)
+        val footerLength = readIntLittleEndian(footerLengthBytes, 0)
+        val tailLength = footerLength + FooterLengthSize + MAGIC.length
+        if (footerLength <= 0 || tailLength > actualSize) {
+          return readFooterBufferFromInputFile(inputFile, filePath)
+        }
+
+        closeOnExcept(HostMemoryBuffer.allocate(tailLength + MAGIC.length, false)) { out =>
+          out.setBytes(0, MAGIC, 0, MAGIC.length)
+          out.copyFromHostBuffer(MAGIC.length, suffix, actualSize - tailLength, tailLength)
+          out
+        }
+      }
+    } catch {
+      case _: java.io.IOException => readFooterBufferFromInputFile(inputFile, filePath)
     }
   }
 

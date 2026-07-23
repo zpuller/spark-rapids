@@ -20,6 +20,7 @@ import ai.rapids.cudf.HostMemoryBuffer;
 import com.nvidia.spark.rapids.IcebergS3RangeCopier;
 import com.nvidia.spark.rapids.IcebergS3RangeCopier.IcebergS3Client;
 import com.nvidia.spark.rapids.fileio.RapidsInputFiles;
+import com.nvidia.spark.rapids.fileio.SizedTailInputFile;
 import com.nvidia.spark.rapids.fileio.iceberg.IcebergInputFile;
 import com.nvidia.spark.rapids.iceberg.ShimUtils;
 import com.nvidia.spark.rapids.jni.fileio.RapidsInputFile;
@@ -43,7 +44,7 @@ import java.util.OptionalLong;
  *
  * <p>The package-private S3 file access is isolated in {@link IcebergS3InputFileAccess}.
  */
-public final class IcebergS3InputFile implements RapidsInputFile {
+public final class IcebergS3InputFile extends IcebergInputFile implements SizedTailInputFile {
   private static final Logger LOG = LoggerFactory.getLogger(IcebergS3InputFile.class);
 
   private final IcebergInputFile delegate;
@@ -52,12 +53,13 @@ public final class IcebergS3InputFile implements RapidsInputFile {
 
   private IcebergS3InputFile(
       IcebergInputFile delegate, URI s3Uri, IcebergS3Client icebergS3Client) {
+    super(delegate.getDelegate());
     this.delegate = delegate;
     this.s3Uri = s3Uri;
     this.icebergS3Client = icebergS3Client;
   }
 
-  public static RapidsInputFile maybeCreate(InputFile inputFile, FileIO fileIO) {
+  public static IcebergInputFile maybeCreate(InputFile inputFile, FileIO fileIO) {
     // When the gating conf is off (or the file is not an S3 file), return the
     // default IcebergInputFile so the standard Iceberg SeekableInputStream path is used.
     IcebergInputFile delegate = new IcebergInputFile(inputFile);
@@ -127,12 +129,18 @@ public final class IcebergS3InputFile implements RapidsInputFile {
    */
   @Override
   public void readTail(long length, HostMemoryBuffer output) throws IOException {
+    readTailAndGetSize(length, output);
+  }
+
+  @Override
+  public long readTailAndGetSize(long length, HostMemoryBuffer output) throws IOException {
     if (length == 0) {
-      return;
+      return 0;
     }
     if (length < 0) {
       throw new IllegalArgumentException("length must be non-negative");
     }
-    IcebergS3RangeCopier.copyTailToHMB(icebergS3Client, output, s3Uri, length, /*dstOffset*/ 0L);
+    return IcebergS3RangeCopier.copyTailToHMB(
+        icebergS3Client, output, s3Uri, length, /*dstOffset*/ 0L);
   }
 }
