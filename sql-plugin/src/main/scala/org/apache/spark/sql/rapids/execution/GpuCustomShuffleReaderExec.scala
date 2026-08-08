@@ -16,14 +16,13 @@
 package org.apache.spark.sql.rapids.execution
 
 import com.nvidia.spark.rapids.{CoalesceGoal, GpuExec, GpuMetric}
-import com.nvidia.spark.rapids.shims.ShimUnaryExecNode
+import com.nvidia.spark.rapids.shims.{CoalescedHashPartitioningShim, ShimUnaryExecNode}
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.catalyst.plans.physical.{CoalescedBoundary,
-  CoalescedHashPartitioning, HashPartitioning, Partitioning, RangePartitioning,
-  RoundRobinPartitioning, SinglePartition, UnknownPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning,
+  RangePartitioning, RoundRobinPartitioning, SinglePartition, UnknownPartitioning}
 import org.apache.spark.sql.execution.{CoalescedPartitionSpec, PartialMapperPartitionSpec,
   PartialReducerPartitionSpec, ShufflePartitionSpec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
@@ -85,14 +84,7 @@ case class GpuCustomShuffleReaderExec(
       // partitions is changed.
       child.outputPartitioning match {
         case h: HashPartitioning =>
-          val boundaries = partitionSpecs.map {
-            case CoalescedPartitionSpec(startReducerIndex, endReducerIndex, _) =>
-              CoalescedBoundary(startReducerIndex, endReducerIndex)
-            case other =>
-              throw new IllegalStateException(
-                s"Unexpected partition spec for coalesced hash partitioning: $other")
-          }
-          CoalescedHashPartitioning(h, boundaries)
+          CoalescedHashPartitioningShim(h, partitionSpecs)
         case r: RangePartitioning =>
           r.copy(numPartitions = partitionSpecs.length)
         // This can only happen for `REBALANCE_PARTITIONS_BY_NONE`, which uses
