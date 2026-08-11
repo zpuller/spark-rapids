@@ -1,5 +1,5 @@
 # Change log
-Generated on 2026-08-05
+Generated on 2026-08-11
 
 ## Release 26.08
 
@@ -7,6 +7,7 @@ Generated on 2026-08-05
 |||
 |:---|:---|
 |[#15263](https://github.com/NVIDIA/cudf-spark/issues/15263)|[FEA] Delta Lake DB-17.3: Enable GPU data-file writes for managed CTAS/RTAS|
+|[#10159](https://github.com/NVIDIA/cudf-spark/issues/10159)|[FEA] provide configuration to automatically set spark.shuffle.manager|
 |[#15272](https://github.com/NVIDIA/cudf-spark/issues/15272)|[FEA] Add support for Apache Spark 3.5.9|
 |[#15168](https://github.com/NVIDIA/cudf-spark/issues/15168)|[FEA] Remove shim for Databricks 13.3|
 |[#15270](https://github.com/NVIDIA/cudf-spark/issues/15270)|[FEA] Add support for Apache Spark 4.0.4|
@@ -20,14 +21,10 @@ Generated on 2026-08-05
 |[#15065](https://github.com/NVIDIA/cudf-spark/issues/15065)|[FEA] Add support for Apache Spark 4.0.3|
 |[#14832](https://github.com/NVIDIA/cudf-spark/issues/14832)|[FEA] Add support for Spark 4.1.2|
 
-### Performance
-|||
-|:---|:---|
-|[#10159](https://github.com/NVIDIA/cudf-spark/issues/10159)|[FEA] provide configuration to automatically set spark.shuffle.manager|
-
 ### Bugs Fixed
 |||
 |:---|:---|
+|[#15449](https://github.com/NVIDIA/cudf-spark/issues/15449)|[BUG] ORC timestamp reads produce incorrect results in non-UTC DST timezones|
 |[#15499](https://github.com/NVIDIA/cudf-spark/issues/15499)|[BUG] RapidsShuffleThreadedWriterSuite leaks host buffers in Spark 340 focused run|
 |[#14731](https://github.com/NVIDIA/cudf-spark/issues/14731)|[AUDIT 4.2] [SPARK-54830][CORE] Enable checksum based indeterminate shuffle retry by default|
 |[#15394](https://github.com/NVIDIA/cudf-spark/issues/15394)|[BUG] Spark 4 Delta RTAS fails on GPU because staged table lacks TRUNCATE support|
@@ -81,6 +78,14 @@ Generated on 2026-08-05
 ### PRs
 |||
 |:---|:---|
+|[#15595](https://github.com/NVIDIA/cudf-spark/pull/15595)|Stabilize AQE SMJ-to-BHJ local-shuffle-reader unit test [fast-ut] [reduced-ci]|
+|[#15547](https://github.com/NVIDIA/cudf-spark/pull/15547)|Update dependency version JNI, private, hybrid to 26.08.0|
+|[#15599](https://github.com/NVIDIA/cudf-spark/pull/15599)|Fix mergeIdenticalProjects dropping alias-producing GpuProjects in DV predicate pushdown|
+|[#15597](https://github.com/NVIDIA/cudf-spark/pull/15597)|Preserve AQE coalesced hash partition boundaries|
+|[#15577](https://github.com/NVIDIA/cudf-spark/pull/15577)|[BUG] Fix Iceberg 1.9 constant conversion IllegalAccessError|
+|[#15450](https://github.com/NVIDIA/cudf-spark/pull/15450)|Fix non-UTC ORC timestamp read correctness  [fast-ut] [reduced-it]|
+|[#15555](https://github.com/NVIDIA/cudf-spark/pull/15555)|[BUG] Preserve GroupPartitionsExec CPU fallback partitioning|
+|[#15544](https://github.com/NVIDIA/cudf-spark/pull/15544)|Fall back to CPU for to_json sortKeys|
 |[#15509](https://github.com/NVIDIA/cudf-spark/pull/15509)|[DOC] update download page for 26.08 release [skip ci]|
 |[#15435](https://github.com/NVIDIA/cudf-spark/pull/15435)|Fix Iceberg S3 PerfIO access with split classloaders|
 |[#15518](https://github.com/NVIDIA/cudf-spark/pull/15518)|Avoid shell command injection in databricks CI scripts [fast-ut][reduced-it]|
