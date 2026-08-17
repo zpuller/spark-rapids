@@ -26,7 +26,8 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, Row, SaveMode}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, NamedExpression}
-import org.apache.spark.sql.catalyst.plans.physical.SinglePartition
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, PartitioningCollection,
+  SinglePartition, UnknownPartitioning}
 import org.apache.spark.sql.execution.{FilterExec, LeafExecNode, LocalTableScanExec,
   PartialReducerPartitionSpec, ReusedSubqueryExec, SortExec, SparkPlan, SubqueryExec}
 import org.apache.spark.sql.execution.{InSubqueryExec => SparkInSubqueryExec}
@@ -107,6 +108,20 @@ class AdaptiveQueryExecSuite
   private case class TestLeafExec(override val output: Seq[Attribute]) extends LeafExecNode {
     override protected def doExecute(): RDD[InternalRow] =
       throw new UnsupportedOperationException("TestLeafExec should not be executed")
+  }
+
+  test("symmetric hash join conservatively handles AQE cache partitioning mismatch") {
+    val key = AttributeReference("key", IntegerType)()
+    val known = HashPartitioning(Seq(key), 4)
+    val aqeCacheUnknown = UnknownPartitioning(0)
+
+    val fallback = GpuShuffledSymmetricHashJoinExec.conservativeOutputPartitioning(
+      known, aqeCacheUnknown)
+    assert(fallback === UnknownPartitioning(4))
+    assert(!fallback.isInstanceOf[PartitioningCollection])
+
+    val matching = GpuShuffledSymmetricHashJoinExec.conservativeOutputPartitioning(known, known)
+    assert(matching === PartitioningCollection(Seq(known, known)))
   }
 
   test("GPU planning rules use their captured session when no session is active") {

@@ -672,6 +672,18 @@ abstract class GpuShuffledSizedHashJoinExec[HOST_BATCH_TYPE <: AutoCloseable] ex
 object GpuShuffledSymmetricHashJoinExec {
   import GpuShuffledSizedHashJoinExec._
 
+  private[rapids] def conservativeOutputPartitioning(
+      left: Partitioning,
+      right: Partitioning): Partitioning = {
+    if (left.numPartitions == right.numPartitions) {
+      PartitioningCollection(Seq(left, right))
+    } else {
+      // A finalized AQE cache plan can temporarily expose UnknownPartitioning(0). Do not claim
+      // the other child's distribution: that can incorrectly eliminate a downstream shuffle.
+      UnknownPartitioning(math.max(left.numPartitions, right.numPartitions))
+    }
+  }
+
   /**
    * Trait to house common code for determining the ideal build/stream
    * assignments for symmetric joins.
@@ -821,7 +833,7 @@ case class GpuShuffledSymmetricHashJoinExec(
 
   override def outputPartitioning: Partitioning = joinType match {
     case _: InnerLike =>
-      PartitioningCollection(Seq(left.outputPartitioning, right.outputPartitioning))
+      conservativeOutputPartitioning(left.outputPartitioning, right.outputPartitioning)
     case FullOuter =>
       UnknownPartitioning(left.outputPartitioning.numPartitions)
     case x =>
