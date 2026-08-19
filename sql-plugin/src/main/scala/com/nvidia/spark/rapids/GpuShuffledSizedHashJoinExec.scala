@@ -675,12 +675,12 @@ object GpuShuffledSymmetricHashJoinExec {
   private[rapids] def conservativeOutputPartitioning(
       left: Partitioning,
       right: Partitioning): Partitioning = {
-    if (left.numPartitions == right.numPartitions) {
-      PartitioningCollection(Seq(left, right))
+    // Constructing the collection validates that both children have the same partition count.
+    val collection = PartitioningCollection(Seq(left, right))
+    if (left.isInstanceOf[UnknownPartitioning] || right.isInstanceOf[UnknownPartitioning]) {
+      UnknownPartitioning(left.numPartitions)
     } else {
-      // A finalized AQE cache plan can temporarily expose UnknownPartitioning(0). Do not claim
-      // the other child's distribution: that can incorrectly eliminate a downstream shuffle.
-      UnknownPartitioning(math.max(left.numPartitions, right.numPartitions))
+      collection
     }
   }
 

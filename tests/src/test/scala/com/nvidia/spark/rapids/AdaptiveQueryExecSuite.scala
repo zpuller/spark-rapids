@@ -38,7 +38,8 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ENSURE_RE
 import org.apache.spark.sql.execution.joins.SortMergeJoinExec
 import org.apache.spark.sql.functions.{col, when}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.rapids.{ExecutionPlanCaptureCallback, GpuFileSourceScanExec}
+import org.apache.spark.sql.rapids.{ExecutionPlanCaptureCallback, GpuFileSourceScanExec,
+  GpuInMemoryTableScanExec}
 import org.apache.spark.sql.rapids.execution.{GpuCustomShuffleReaderExec, GpuJoinExec, GpuShuffleExchangeExecBase}
 import org.apache.spark.sql.rapids.shims.SparkSessionUtils
 import org.apache.spark.sql.rapids.shims.TrampolineConnectShims.SparkSession
@@ -110,18 +111,40 @@ class AdaptiveQueryExecSuite
       throw new UnsupportedOperationException("TestLeafExec should not be executed")
   }
 
-  test("symmetric hash join conservatively handles AQE cache partitioning mismatch") {
+  test("GPU cache scan preserves the cached RDD partition count when AQE partitioning is unknown") {
+    val conf = new SparkConf()
+      .set("spark.sql.adaptive.enabled", "true")
+      .set("spark.sql.cache.serializer", "com.nvidia.spark.ParquetCachedBatchSerializer")
+    withGpuHiveSparkSession({ spark =>
+      val cached = spark.range(100).repartition(4).cache()
+      try {
+        cached.count()
+        val query = cached.filter(col("id") >= 0)
+        query.collect()
+
+        val scans = collectWithSubqueries(query.queryExecution.executedPlan) {
+          case scan: GpuInMemoryTableScanExec => scan
+        }
+        assert(scans.nonEmpty)
+        assert(scans.forall(_.relation.cachedPlan.outputPartitioning === UnknownPartitioning(0)))
+        assert(scans.forall(_.outputPartitioning === UnknownPartitioning(4)))
+      } finally {
+        cached.unpersist()
+      }
+    }, conf)
+  }
+
+  test("symmetric hash join does not claim known partitioning when one child is unknown") {
     val key = AttributeReference("key", IntegerType)()
     val known = HashPartitioning(Seq(key), 4)
-    val aqeCacheUnknown = UnknownPartitioning(0)
+    val unknown = UnknownPartitioning(4)
 
-    val fallback = GpuShuffledSymmetricHashJoinExec.conservativeOutputPartitioning(
-      known, aqeCacheUnknown)
-    assert(fallback === UnknownPartitioning(4))
-    assert(!fallback.isInstanceOf[PartitioningCollection])
-
-    val matching = GpuShuffledSymmetricHashJoinExec.conservativeOutputPartitioning(known, known)
-    assert(matching === PartitioningCollection(Seq(known, known)))
+    assert(GpuShuffledSymmetricHashJoinExec.conservativeOutputPartitioning(
+      unknown, known) === UnknownPartitioning(4))
+    assert(GpuShuffledSymmetricHashJoinExec.conservativeOutputPartitioning(
+      known, unknown) === UnknownPartitioning(4))
+    assert(GpuShuffledSymmetricHashJoinExec.conservativeOutputPartitioning(
+      known, known) === PartitioningCollection(Seq(known, known)))
   }
 
   test("GPU planning rules use their captured session when no session is active") {
