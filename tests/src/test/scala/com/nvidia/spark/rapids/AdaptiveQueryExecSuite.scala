@@ -26,8 +26,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, Row, SaveMode}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, NamedExpression}
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, PartitioningCollection,
-  SinglePartition, UnknownPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{SinglePartition, UnknownPartitioning}
 import org.apache.spark.sql.execution.{FilterExec, LeafExecNode, LocalTableScanExec,
   PartialReducerPartitionSpec, ReusedSubqueryExec, SortExec, SparkPlan, SubqueryExec}
 import org.apache.spark.sql.execution.{InSubqueryExec => SparkInSubqueryExec}
@@ -132,19 +131,6 @@ class AdaptiveQueryExecSuite
         cached.unpersist()
       }
     }, conf)
-  }
-
-  test("symmetric hash join does not claim known partitioning when one child is unknown") {
-    val key = AttributeReference("key", IntegerType)()
-    val known = HashPartitioning(Seq(key), 4)
-    val unknown = UnknownPartitioning(4)
-
-    assert(GpuShuffledSymmetricHashJoinExec.conservativeOutputPartitioning(
-      unknown, known) === UnknownPartitioning(4))
-    assert(GpuShuffledSymmetricHashJoinExec.conservativeOutputPartitioning(
-      known, unknown) === UnknownPartitioning(4))
-    assert(GpuShuffledSymmetricHashJoinExec.conservativeOutputPartitioning(
-      known, known) === PartitioningCollection(Seq(known, known)))
   }
 
   test("GPU planning rules use their captured session when no session is active") {

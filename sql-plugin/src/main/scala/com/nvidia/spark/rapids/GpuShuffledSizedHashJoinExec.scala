@@ -672,18 +672,6 @@ abstract class GpuShuffledSizedHashJoinExec[HOST_BATCH_TYPE <: AutoCloseable] ex
 object GpuShuffledSymmetricHashJoinExec {
   import GpuShuffledSizedHashJoinExec._
 
-  private[rapids] def conservativeOutputPartitioning(
-      left: Partitioning,
-      right: Partitioning): Partitioning = {
-    // Constructing the collection validates that both children have the same partition count.
-    val collection = PartitioningCollection(Seq(left, right))
-    if (left.isInstanceOf[UnknownPartitioning] || right.isInstanceOf[UnknownPartitioning]) {
-      UnknownPartitioning(left.numPartitions)
-    } else {
-      collection
-    }
-  }
-
   /**
    * Trait to house common code for determining the ideal build/stream
    * assignments for symmetric joins.
@@ -833,7 +821,7 @@ case class GpuShuffledSymmetricHashJoinExec(
 
   override def outputPartitioning: Partitioning = joinType match {
     case _: InnerLike =>
-      conservativeOutputPartitioning(left.outputPartitioning, right.outputPartitioning)
+      PartitioningCollection(Seq(left.outputPartitioning, right.outputPartitioning))
     case FullOuter =>
       UnknownPartitioning(left.outputPartitioning.numPartitions)
     case x =>
