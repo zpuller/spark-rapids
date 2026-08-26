@@ -28,9 +28,10 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, NamedExpression}
 import org.apache.spark.sql.catalyst.plans.physical.{SinglePartition, UnknownPartitioning}
 import org.apache.spark.sql.execution.{FilterExec, LeafExecNode, LocalTableScanExec,
-  PartialReducerPartitionSpec, ReusedSubqueryExec, SortExec, SparkPlan, SubqueryExec}
+  PartialReducerPartitionSpec, ReusedSubqueryExec, SortExec, SparkPlan, SubqueryExec, UnaryExecNode}
 import org.apache.spark.sql.execution.{InSubqueryExec => SparkInSubqueryExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.columnar.InMemoryRelation
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ENSURE_REQUIREMENTS,
   Exchange, REPARTITION_BY_NUM, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
@@ -43,6 +44,7 @@ import org.apache.spark.sql.rapids.execution.{GpuCustomShuffleReaderExec, GpuJoi
 import org.apache.spark.sql.rapids.shims.SparkSessionUtils
 import org.apache.spark.sql.rapids.shims.TrampolineConnectShims.SparkSession
 import org.apache.spark.sql.types.{ArrayType, DataTypes, DecimalType, IntegerType, StringType, StructField, StructType}
+import org.apache.spark.sql.vectorized.ColumnarBatch
 
 class AdaptiveQueryExecSuite
     extends SparkQueryCompareTestSuite
@@ -110,6 +112,16 @@ class AdaptiveQueryExecSuite
       throw new UnsupportedOperationException("TestLeafExec should not be executed")
   }
 
+  private case class UnknownPartitioningExec(child: SparkPlan) extends UnaryExecNode {
+    override def output: Seq[Attribute] = child.output
+    override def outputPartitioning: UnknownPartitioning = UnknownPartitioning(0)
+    override def supportsColumnar: Boolean = child.supportsColumnar
+    override protected def doExecute(): RDD[InternalRow] = child.execute()
+    override protected def doExecuteColumnar(): RDD[ColumnarBatch] = child.executeColumnar()
+    override protected def withNewChildInternal(newChild: SparkPlan): UnknownPartitioningExec =
+      copy(child = newChild)
+  }
+
   test("GPU cache scan preserves the cached RDD partition count when AQE partitioning is unknown") {
     val conf = new SparkConf()
       .set("spark.sql.adaptive.enabled", "true")
@@ -118,15 +130,17 @@ class AdaptiveQueryExecSuite
       val cached = spark.range(100).repartition(4).cache()
       try {
         cached.count()
-        val query = cached.filter(col("id") >= 0)
-        query.collect()
+        val relation = cached.queryExecution.withCachedData.collectFirst {
+          case r: InMemoryRelation => r
+        }.getOrElse(fail(s"Expected an InMemoryRelation:\n${cached.queryExecution.withCachedData}"))
+        val unknownPlan = UnknownPartitioningExec(relation.cachedPlan)
+        val unknownRelation = relation.copy(
+          cacheBuilder = relation.cacheBuilder.copy(cachedPlan = unknownPlan))
+        val scan = GpuInMemoryTableScanExec(
+          unknownRelation.output, Seq.empty, unknownRelation)
 
-        val scans = collectWithSubqueries(query.queryExecution.executedPlan) {
-          case scan: GpuInMemoryTableScanExec => scan
-        }
-        assert(scans.nonEmpty)
-        assert(scans.forall(_.relation.cachedPlan.outputPartitioning === UnknownPartitioning(0)))
-        assert(scans.forall(_.outputPartitioning === UnknownPartitioning(4)))
+        assert(scan.relation.cachedPlan.outputPartitioning === UnknownPartitioning(0))
+        assert(scan.outputPartitioning === UnknownPartitioning(4))
       } finally {
         cached.unpersist()
       }
