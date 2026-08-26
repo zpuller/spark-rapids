@@ -189,10 +189,16 @@ def test_iceberg_scan_from_background_thread(spark_tmp_table_factory):
     with_cpu_session(setup_iceberg_table)
 
     def scan_iceberg_table(spark):
+        def run_query():
+            df = spark.sql(f"SELECT SUM(id) FROM {full_table}")
+            return df.collect(), df
+
         with ThreadPoolExecutor(max_workers=1) as executor:
-            result = executor.submit(
-                lambda: spark.sql(f"SELECT SUM(id) FROM {full_table}").collect()).result()
-            assert result[0][0] == 6
+            result, df = executor.submit(run_query).result()
+
+        assert result[0][0] == 6
+        callback = spark._sc._jvm.org.apache.spark.sql.rapids.ExecutionPlanCaptureCallback
+        callback.assertContains(df._jdf, "GpuBatchScanExec")
 
     with_gpu_session(scan_iceberg_table)
 
