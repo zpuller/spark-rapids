@@ -484,6 +484,11 @@ object GpuDeviceManager extends Logging {
       logInfo(s"Initializing pinned memory pool (${pinnedSize / 1024 / 1024.0} MiB)${logDetails}")
       PinnedMemoryPool.initialize(pinnedSize, gpuId, conf.pinnedPoolCuioDefault, initThreads)
     }
+    if (conf.pageablePoolSize > 0 && !PageableMemoryPool.isInitialized) {
+      logWarning(s"Initializing local-test pageable pool: ${conf.pageablePoolSize} bytes, " +
+        s"${conf.pageablePoolPretouchThreads} pre-touch threads")
+      PageableMemoryPool.initialize(conf.pageablePoolSize, conf.pageablePoolPretouchThreads)
+    }
     // Host memory limits must be set after the pinned memory pool is initialized
     HostAlloc.initialize(nonPinnedLimit)
     // Fill the MULTITHREAD_READ_MEMORY_LIMIT_SIZE with 90% of the total off-heap memory

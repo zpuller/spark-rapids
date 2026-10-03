@@ -35,6 +35,20 @@ private[rapids] trait RapidsConfResourceEntries {
     .bytesConf(ByteUnit.BYTE)
     .createWithDefault(0)
 
+  val PAGEABLE_POOL_SIZE = conf("spark.rapids.memory.pageablePool.size")
+    .doc("Size of the pre-touched pageable pool for local testing; 0 disables it.")
+    .startupOnly()
+    .internal()
+    .bytesConf(ByteUnit.BYTE)
+    .createWithDefault(0)
+
+  val PAGEABLE_POOL_PRETOUCH_THREADS = conf("spark.rapids.memory.pageablePool.pretouchThreads")
+    .doc("Number of threads used to pre-touch the pageable pool.")
+    .startupOnly()
+    .internal()
+    .integerConf
+    .createWithDefault(16)
+
   val PINNED_POOL_SET_CUIO_DEFAULT = conf("spark.rapids.memory.pinnedPool.setCuioDefault")
     .doc("If set to true, the pinned pool configured for the plugin will be shared with " +
       "cuIO for small pinned allocations.")

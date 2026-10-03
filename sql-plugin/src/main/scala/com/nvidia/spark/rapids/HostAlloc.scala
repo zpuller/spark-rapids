@@ -17,11 +17,11 @@
 package com.nvidia.spark.rapids
 
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.LongAdder
+import java.util.concurrent.atomic.{AtomicLong, LongAdder}
 
 import scala.collection.mutable
 
-import ai.rapids.cudf.{DefaultHostMemoryAllocator, HostMemoryAllocator, HostMemoryBuffer, MemoryBuffer, PinnedMemoryPool}
+import ai.rapids.cudf.{DefaultHostMemoryAllocator, HostMemoryAllocator, HostMemoryBuffer, MemoryBuffer, PageableMemoryPool, PinnedMemoryPool}
 import com.nvidia.spark.rapids.HostAlloc.bookkeepHostMemoryFree
 import com.nvidia.spark.rapids.RmmRapidsRetryIterator.{BOOKKEEP_MEMORY, BOOKKEEP_MEMORY_CALLSTACK}
 import com.nvidia.spark.rapids.jni.{CpuRetryOOM, RmmSpark}
@@ -41,6 +41,7 @@ private class HostAlloc(nonPinnedLimit: Long) extends HostMemoryAllocator with L
   private var currentPinnedAllocated: Long = 0L
   private val isUnlimited = nonPinnedLimit < 0
   private val isPinnedOnly = nonPinnedLimit == 0
+  private val pageablePoolHits = new AtomicLong()
 
   // Expose for usage ratio calculation
   def getCurrentAllocated: Long = synchronized {
@@ -120,8 +121,18 @@ private class HostAlloc(nonPinnedLimit: Long) extends HostMemoryAllocator with L
     ret
   }
 
-  private def tryAllocNonPinned(amount: Long): Option[HostMemoryBuffer] = {
-    val ret = if (isUnlimited) {
+  private def tryAllocNonPinned(amount: Long, usePool: Boolean): Option[HostMemoryBuffer] = {
+    val fromPool = if (usePool) Option(PageableMemoryPool.tryAllocate(amount)) else None
+    val ret = if (fromPool.isDefined) {
+      synchronized {
+        currentNonPinnedAllocated += amount
+      }
+      val hits = pageablePoolHits.incrementAndGet()
+      if (hits <= 3 || hits % 1000 == 0) {
+        logWarning(s"Local-test pageable pool allocation #$hits: $amount bytes")
+      }
+      fromPool
+    } else if (isUnlimited) {
       synchronized {
         currentNonPinnedAllocated += amount
       }
@@ -207,10 +218,10 @@ private class HostAlloc(nonPinnedLimit: Long) extends HostMemoryAllocator with L
           if (preferPinned) {
             tryAllocPinned(amount).map(HostAllocResult(_, isPinned = true))
           } else {
-            tryAllocNonPinned(amount).map(HostAllocResult(_, isPinned = false))
+            tryAllocNonPinned(amount, usePool = false).map(HostAllocResult(_, isPinned = false))
           }).orElse {
           if (preferPinned) {
-            tryAllocNonPinned(amount).map(HostAllocResult(_, isPinned = false))
+            tryAllocNonPinned(amount, usePool = true).map(HostAllocResult(_, isPinned = false))
           } else {
             tryAllocPinned(amount).map(HostAllocResult(_, isPinned = true))
           }
